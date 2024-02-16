@@ -20,10 +20,13 @@ args = arg_parser.parse_args()
 if args.s and args.t:
     print('cant have em both!')
 elif not (args.s or args.t):
+    parsing = True
     nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner',
                           download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
     nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner',
                              download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
+else:
+    parsing = False
 
 
 # preprocessing --------------------------------------------------------------------------------------------------------
@@ -302,133 +305,22 @@ def coord_info(crd, sent, conj, other_ids):
     return txt_ids
 
 
-def extract_coords(src, marker, conll_list, sentence_count):
-    """
-    finds coordinations in a given text, creates a conllu file containing every sentence with a found coordination
-    :param src: text to parse
-    :param marker: marker of the parsed text
-    :param conll_list: list for sentences, to later create a conllu file corresponding to the table of coordinations
-    :param sentence_count: counts how many sentences from the whole source file have been parsed
-    :return: list of dictionaries representing coordinations, the number of sentences that were already processed
-    """
-    torch.cuda.empty_cache()
-    try:
-        doc = nlp(src)
-    except RuntimeError:
-        doc = nlpcpu(src)
+def extract_coords(doc, marker, conll_list, sentence_count):
     coordinations = []
-    for sent in doc.sentences:
-        index = sent.index + 1 + sentence_count
-        # updating sentence count so that it corresponds to the sentence ids in the source .tsv file
-        # ^ it didn't work, but we're not using the sent.id in the end, so I'm not trying to correct this
-        # ^^ I will correct this actually because I hate it all now
-        sent.text = re.sub(' +', ' ', sent.text)
-        dep_children(sent)
-        word_indexer(sent)
+    for sent in tqdm(doc.sentences, disable=parsing):
+        # progress bar is disabled if the data has to be parsed first, because then there is a tqdm wrapper on the
+        # parsing loop
 
-        conjs = {}
-        wrong_coords = []
-        # every word that has a conj dependency becomes a key in the conjs dictionary, its values are all words that are
-        # connected to the key with a conj dependency
-        for dep in sent.dependencies:
-            if dep[1] == 'conj' \
-                    and dep[0].upos != 'PUNCT' and dep[2].upos != 'PUNCT'\
-                    and dep[0].text not in [',', ';', '-', ':', '--'] and dep[2].text not in [',', ';', '-', ':', '--']:
-                # stanza has found some coordinations between punctuation marks, which shouldn't happen
-                if dep[0].id > dep[2].id:
-                    # stanza has also found a few edges with the conj label directed to the left
-                    if dep[0].id in conjs.keys():
-                        wrong_coords.append(dep[0].id)
-                    if dep[2].id in conjs.keys():
-                        wrong_coords.append(dep[2].id)
-                    continue
-                if dep[0].id in conjs.keys():
-                    conjs[dep[0].id].append(dep[2].id)
-                else:
-                    conjs[dep[0].id] = [dep[2].id]
-
-        for wrong in wrong_coords:
-            try:
-                del conjs[wrong]
-            except KeyError:
-                continue
-
-        # this loop looks through the conj dependencies and finds what coordinations they make up
-        # the crds list will consist of lists of heads of every element of a given coordination
-        crds = []
-        for l in conjs.keys():
-            crd = [l]
-            temp_coord = [] # this will be used if what the loop is looking at could be a nested coordination
-            cc = None # the conjunction of a coordination
-            conjs[l].sort()
-            for conj in conjs[l]:
-                # an element of coordination is added either to the main coordination or to the temporary (possibly nested) one
-                if cc:
-                    temp_coord.append(conj)
-                else:
-                    crd.append(conj)
-
-                # this loop looks for a conjunction attached to the element of a coordination
-                for ch in sent.words[conj-1].children:
-                    if not cc and sent.words[ch-1].deprel == 'cc':
-                        # sets a conjunction if there wasn't any found yet
-                        cc = sent.words[ch-1].text
-                    elif cc and sent.words[ch-1].deprel == 'cc' and sent.words[ch-1].text != cc:
-                        # if there was a conjunction found already and now there's a different one, we're looking at
-                        # a nested coordination
-                        crds.append(crd)
-                        crd = [l] + temp_coord
-                        cc = sent.words[ch-1].text
-                    elif cc and sent.words[ch-1].deprel == 'cc' and sent.words[ch-1].text == cc:
-                        # if there was a conjunction found already and the new one is the same, we can clean
-                        # the temp_coord list, because so far this seems to not be a nested coordination
-                        crd += temp_coord
-                        temp_coord = []
-            # if not temp_coord:
-            #     crds.append(crd)
-            # this was here earlier and I feel like it shouldn't be, but now I'm not sure
-            if crd not in crds:
-                crds.append(crd)
-
-        if crds:
-            # if there are any valid conj dependencies in a sentence, it will be included in the .conllu file
-            # a sentence id including the @@ marker from COCA source files is assigned and will be both in the .conllu
-            # and .csv file
-            sent.coca_sent_id = str(marker) + '-' + str(index)
-            conll_list.append(sent)
-
-        # this loop writes down information about every coordination based on the list of elements of a coordination
-        for crd in crds:
-            if len(crd) > 1:
-                coord = {'L': sent.words[min(crd) - 1], 'R': sent.words[max(crd) - 1]}
-                crd.pop(0)
-                crd.pop(-1)
-                coord['other_conjuncts'] = crd
-                if coord['L'].head != 0:
-                    coord['gov'] = sent.words[coord['L'].head - 1]
-                for child in coord['R'].children:
-                    if sent.words[child-1].deprel == 'cc':
-                        coord['conj'] = sent.words[child-1]
-                        break
-                r_ids = coord_info(coord, sent, 'R', [])
-                coord_info(coord, sent, 'L', r_ids)
-                coord['sentence'] = sent.text
-                coord['sent_id'] = sent.coca_sent_id
-                coordinations.append(coord)
-
-    sentence_count += len(doc.sentences)
-    return coordinations, sentence_count
-
-
-def extract_coords_from_conll(doc):
-    coordinations = []
-    for sent in tqdm(doc.sentences):
+        # preparing the sentence depending on its source:
         if args.t:
             get_info_from_conll(sent)
-
         sent.text = re.sub(' +', ' ', sent.text)
-        sent.text = clean(sent.text)
-        # those ^ two lines may destroy something so watch out
+        if parsing:
+            index = sent.index + 1 + sentence_count
+            # updating sentence count so that it corresponds to the sentence ids in the source .tsv file
+            # ^ it didn't work, but we're not using the sent.id in the end, so I'm not trying to correct this
+        else:
+            sent.text = clean(sent.text)
         dep_children(sent)
         word_indexer(sent)
 
@@ -468,7 +360,7 @@ def extract_coords_from_conll(doc):
             cc = None  # the conjunction of a coordination
             conjs[l].sort()
             for conj in conjs[l]:
-                # an element of coordination is added either to the main coordination or a temporary (possibly nested) one
+                # an element of coordination is added either to the main coordination or to the temporary (possibly nested) one
                 if cc:
                     temp_coord.append(conj)
                 else:
@@ -496,6 +388,13 @@ def extract_coords_from_conll(doc):
             if crd not in crds:
                 crds.append(crd)
 
+            if parsing and crds:
+                # if there are any valid conj dependencies in a sentence, it will be included in the .conllu file
+                # a sentence id including the @@ marker from COCA source files is assigned and will be both in the .conllu
+                # and .csv file
+                sent.coca_sent_id = str(marker) + '-' + str(index)
+                conll_list.append(sent)
+
         # this loop writes down information about every coordination based on the list of elements of a coordination
         for crd in crds:
             if len(crd) > 1:
@@ -506,15 +405,20 @@ def extract_coords_from_conll(doc):
                 if coord['L'].head != 0:
                     coord['gov'] = sent.words[coord['L'].head - 1]
                 for child in coord['R'].children:
-                    if sent.words[child - 1].deprel == 'cc':
-                        coord['conj'] = sent.words[child - 1]
+                    if sent.words[child-1].deprel == 'cc':
+                        coord['conj'] = sent.words[child-1]
                         break
                 r_ids = coord_info(coord, sent, 'R', [])
                 coord_info(coord, sent, 'L', r_ids)
                 coord['sentence'] = sent.text
-                coord['sent_id'] = sent.sent_id
+                if parsing:
+                    coord['sent_id'] = sent.coca_sent_id
+                else:
+                    coord['sent_id'] = sent.sent_id
                 coordinations.append(coord)
-    return coordinations
+
+        sentence_count += len(doc.sentences)
+    return coordinations, sentence_count
 
 
 # creating files -------------------------------------------------------------------------------------------------------
@@ -613,9 +517,9 @@ def create_csv(crd_list, genre, year, source):
 def run(filename):
     if args.s or args.t:
         doc = CoNLL.conll2doc(os.getcwd() + '/inp/' + filename)
-        crds_full_list = extract_coords_from_conll(doc)
-        genre = re.search('acad|news|fic|mag|blog|web|tvm', file).group()
-        year = re.search('[0-9]+', file).group()
+        crds_full_list, sent_count = extract_coords(doc, '', [], 0)
+        genre = re.search('acad|news|fic|mag|blog|web|tvm', filename).group()
+        year = re.search('[0-9]+', filename).group()
     else:
         txts, genre, year, source = chunker(filename)
         crds_full_list = []
@@ -624,7 +528,12 @@ def run(filename):
 
         # extracts coordinations one chunk at a time
         for mrk in tqdm(txts.keys()):
-            coordinations, sent_count = extract_coords(txts[mrk], mrk, conll_list, sent_count)
+            torch.cuda.empty_cache()
+            try:
+                doc = nlp(txts[mrk])
+            except RuntimeError:
+                doc = nlpcpu(txts[mrk])
+            coordinations, sent_count = extract_coords(doc, mrk, conll_list, sent_count)
             crds_full_list += coordinations
 
         print('processing conll...')
