@@ -8,7 +8,6 @@ from datetime import datetime
 import torch
 import argparse
 import os
-import gc
 from stanza.utils.conll import CoNLL
 
 
@@ -20,9 +19,11 @@ args = arg_parser.parse_args()
 
 if args.s and args.t:
     print('cant have em both!')
-
-nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner', download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
-nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner', download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
+elif not (args.s or args.t):
+    nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner',
+                          download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
+    nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner',
+                             download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
 
 
 # preprocessing --------------------------------------------------------------------------------------------------------
@@ -33,15 +34,16 @@ def chunker(src):
     :param src: name of the source .tsv file
     :return: dictionary with the text chunks, genre, year and source of the parsed texts given in the .tsv
     """
+    path = os.getcwd() + '/inp/' + src
     texts = {}
-    df = pd.read_csv(src, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
+    df = pd.read_csv(path, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
     # przerobione od Adama
     df.dropna()
     filtered1 = df[df["SENT"].str.contains("TOOLONG") == False]
     filtered2 = filtered1[filtered1["SENT"].str.match(r"^ *\d[\d ]*$") == False]
-    filtered2.to_csv(src, sep="\t", quoting=csv.QUOTE_NONE, lineterminator="\n", index=None)
+    filtered2.to_csv(path, sep="\t", quoting=csv.QUOTE_NONE, lineterminator="\n", index=None)
     # ------
-    df = pd.read_csv(src, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
+    df = pd.read_csv(path, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
     txt = ''
     marker = ''
     genre = df.loc[1][2]
@@ -536,7 +538,7 @@ def create_conllu(sent_list, genre, year):
             sent_conll.extend(token.to_conll_text().split('\n'))
         doc_conll.append(sent_conll)
 
-    path = os.getcwd() + '/done-conll/stanza_trees_' + str(genre) + '_' + str(year) + '.conllu'
+    path = os.getcwd() + '/outp/stanza_trees_' + str(genre) + '_' + str(year) + '.conllu'
     with open(path, mode='w', encoding='utf-8') as conll_file:
         for sent in doc_conll:
             for line in sent:
@@ -558,7 +560,8 @@ def create_csv(crd_list, genre, year, source):
     else:
         parser = 'stanza'
 
-    path = os.getcwd() + f'/done-csv/{parser}_coordinations_' + str(genre) + '_' + str(year) + '.csv'
+    from_file = f'text_{genre}_{year}.txt'
+    path = os.getcwd() + f'/outp/{parser}_coordinations_' + str(genre) + '_' + str(year) + '.csv'
     with open(path, mode='w', newline="", encoding='utf-8-sig') as outfile:
         writer = csv.writer(outfile)
         col_names = ['governor.position', 'governor.word', 'governor.tag', 'governor.pos', 'governor.ms',
@@ -603,53 +606,35 @@ def create_csv(crd_list, genre, year, source):
                              str(coord['sentence']),                                                                    # sentence
                              coord['sent_id'],                                                                          # sent.id
                              genre,                                                                                     # genre
-                             source])                                                                                   # converted.from.file
+                             from_file])                                                                                # converted.from.file
 
 
 # running --------------------------------------------------------------------------------------------------------------
-def run(path):
-    s = datetime.now()
+def run(filename):
+    if args.s or args.t:
+        doc = CoNLL.conll2doc(os.getcwd() + '/inp/' + filename)
+        crds_full_list = extract_coords_from_conll(doc)
+        genre = re.search('acad|news|fic|mag|blog|web|tvm', file).group()
+        year = re.search('[0-9]+', file).group()
+    else:
+        txts, genre, year, source = chunker(filename)
+        crds_full_list = []
+        conll_list = []
+        sent_count = 0
 
-    txts, genre, year, source = chunker(path)
-    crds_full_list = []
-    conll_list = []
-    sent_count = 0
+        # extracts coordinations one chunk at a time
+        for mrk in tqdm(txts.keys()):
+            coordinations, sent_count = extract_coords(txts[mrk], mrk, conll_list, sent_count)
+            crds_full_list += coordinations
 
-    # extracts coordinations one chunk at a time
-    for mrk in tqdm(txts.keys()):
-        coordinations, sent_count = extract_coords(txts[mrk], mrk, conll_list, sent_count)
-        crds_full_list += coordinations
+        print('processing conll...')
+        create_conllu(conll_list, genre, year)
+        print('done!')
 
     print('creating a csv...')
-    create_csv(crds_full_list, genre, year, source)
+    create_csv(crds_full_list, genre, year, filename)
     print('csv created!')
 
-    print('processing conll...')
-    create_conllu(conll_list, genre, year)
-    print('done!')
 
-    e = datetime.now()
-    print(e-s)
-
-
-def run_from_conll(file):
-    s = datetime.now()
-    doc = CoNLL.conll2doc(os.getcwd() + '/done-conll/' + file)
-    e = datetime.now()
-    print(e-s)
-    coordinations = extract_coords_from_conll(doc)
-    genre = re.search('acad|news|fic|mag|blog|web|tvm', file).group()
-    year = re.search('[0-9]+', file).group()
-    print('writing to csv...')
-    create_csv(coordinations, genre=genre, year=year, source=f'text_{genre}_{year}.txt')
-    print('done!\n' + 30*'--')
-
-
-if args.s or args.t:
-    for file in args.f:
-        print('processing ' + file)
-        run_from_conll(file)
-else:
-    for file in args.f:
-        print('processing ' + file)
-        run(os.getcwd() + '/' + file)
+for file in args.f:
+    run(file)
