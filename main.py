@@ -14,12 +14,18 @@ from stanza.utils.conll import CoNLL
 
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('-f', nargs='+')
+arg_parser.add_argument('-s', action='store_true')
+arg_parser.add_argument('-t', action='store_true')
 args = arg_parser.parse_args()
+
+if args.s and args.t:
+    print('cant have em both!')
+
 nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner', download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
 nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner', download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
 
 
-# preparing the text ---------------------------------------------------------------------------------------------------
+# preprocessing --------------------------------------------------------------------------------------------------------
 def chunker(src):
     """
     puts the sentences from a given .tsv file into bigger chunks of text, every chunk is placed in a dictionary and is
@@ -75,17 +81,17 @@ def clean(txt):
     :return: clean text
     """
     to_remove = []
-    qm = 2
-    # 0 - quotation mark was closed, 1 - quotation mark was opened, 2 - quotation mark was not set
 
     # this loop finds the redundant spaces and adds them to the to_remove list
     for i in range(len(txt)):
         if txt[i] == ' ':
             if i+1 == len(txt) or \
-                    (len(txt) > i+3 and txt[i+1:i+3] == '...') or \
+                    (len(txt) > i+3 and txt[i+1:i+3] == '...' and txt[i-1] != '.') or \
                     (txt[i + 1] in [',', '.', '!', '?', ')', '}', ']', ':', ';'] and ((i + 2 < len(txt) and txt[i + 2] == ' ') or i + 2 == len(txt))) or \
                     (txt[i - 1] in ['(', '{', '['] and txt[i - 2] == ' ') or \
                     (txt[i + 1:i + 4] == "n't"):
+                if txt[i+1] == '.' and txt[i-3:i-1] == '...':
+                    continue # please may this work
                 to_remove.append(i)
         elif len(txt) == 1:
             break
@@ -93,19 +99,20 @@ def clean(txt):
             to_remove.append(i+1)
         elif txt[i] == "'" and txt[i - 1] == ' ' and (i+1 == len(txt) or txt[i + 1] != ' '):
             to_remove.append(i-1)
-        elif txt[i] == '"':
-            if i == 0 and txt[1] == ' ':
-                to_remove.append(1)
-                qm = 1
-            elif i == len(txt)-1 and txt[i-1] == ' ':
-                to_remove.append(i-1)
-            elif txt[i - 1] == ' ' and (i + 1 == len(txt) or txt[i + 1] == ' '):
-                if qm == 1:
-                    to_remove.append(i - 1)
-                    qm = 0
-                else:
-                    to_remove.append(i + 1)
-                    qm = 1
+    # there was an elif for " too, but I should've removed it a long time ago I think, maybe I should do the same for '?
+
+    # the ellipsis will be the death of me...
+    if '... .' in txt:
+        ellipses = re.finditer(re.escape('... .'), txt)
+        for e in ellipses:
+            if e.start() + 3 in to_remove:
+                to_remove.remove(e.start() + 3)
+                # '... .'[3] returns the space, I have to get those specific spaces out of this list
+    if '. ...' in txt:
+        ellipses = re.finditer(re.escape('. ...'), txt)
+        for e in ellipses:
+            if e.start() + 1 in to_remove:
+                to_remove.remove(e.start() + 1)
 
     to_remove.sort()
     to_remove.reverse()
@@ -115,7 +122,58 @@ def clean(txt):
     return txt
 
 
-# working with stanza sentences ----------------------------------------------------------------------------------------
+def clean_sent_id(filename):
+    """
+    idr what this does or what i needed it for, but once i figure it out ill tell you
+    :param filename: name of some file to correct idk
+    :return:
+    """
+    with open(filename, mode='r', encoding='utf-8') as inp:
+        lines = inp.readlines()
+    with open(filename, mode='w', encoding='utf-8') as outp:
+        corrected = []
+        last_line = -1
+        for n, line in enumerate(lines):
+            if last_line == n:
+                continue
+            if re.match('# ID :', line):
+                line = line[:-1] + lines[n+1]
+                last_line = n+1
+            corrected.append(line)
+        outp.writelines(corrected)
+
+
+def get_info_from_conll(sentence):
+    """
+    gets the sentence text and sentence id for sentences in conllu files from trankit
+    :param sentence: sentence object from a stanza doc
+    :return:
+    """
+    found = 0 # I need both the sentence text and the right sentence id, this will keep track
+    for comment in sentence.comments:
+        if '# SENTENCE : ' in comment:
+            sentence.text = comment[len('# SENTENCE : '):]
+            found += 1
+            continue
+
+        if '# ID : ' in comment:
+            # sometimes in the ID field there's something like @@134545-987 which is fine, but then other times there's
+            # @@134545TOOLONG blablah once upon-987 or @@134545-987.0 or even @@134545TOOLONG blablah once upon-987.0
+            textid = re.search('@@[0-9]{1,8}', comment).group()
+            if comment[-2:] == '.0':
+                sentid = re.search('-[0-9]+$', comment[:-2]).group()
+            else:
+                sentid = re.search('-[0-9]+$', comment).group()
+            sentence.sent_id = textid + sentid
+            found += 1
+            continue
+
+    # a sent_id is given for every sentence, so it can be used to identify where an error occurred, but this is not the
+    # id that I need for the csv table later
+    assert found == 2, 'this conllu lacks information: ' + sentence.sent_id
+
+
+# working with sentences -----------------------------------------------------------------------------------------------
 def dep_children(sentence):
     """
     for every word in a given sentence finds a list of IDs of that words dependents
@@ -130,10 +188,26 @@ def dep_children(sentence):
 
 
 def word_indexer(sentence):
+    """
+    adds information about the starting and ending characters of a word; needed for trankit conllu files and for when
+    there are double spaces in sentences in tsv files
+    :param sentence: stanza sentence object
+    :return:
+    """
     sent_text = sentence.text
     current_id = 0
     for word in sentence.words:
-        match = re.search(re.escape(word.text), sent_text)
+        if re.search(re.escape(word.text), sent_text):
+            match = re.search(re.escape(word.text), sent_text)
+        elif "'" in word.text and re.search(word.text, sent_text):
+            # this should match "\'", which is not matched by re.escape()
+            match = re.search(word.text, sent_text)
+        else:
+            # maybe the clean version matches if the original does not!
+            word.text = re.sub(' +', ' ', word.text)
+            word.text = clean(word.text)
+            match = re.search(re.escape(word.text), sent_text)
+
         word.start = match.start() + current_id
         word.end = match.end() + current_id
         sent_text = sent_text[match.end():]
@@ -244,9 +318,11 @@ def extract_coords(src, marker, conll_list, sentence_count):
     for sent in doc.sentences:
         index = sent.index + 1 + sentence_count
         # updating sentence count so that it corresponds to the sentence ids in the source .tsv file
+        # ^ it didn't work, but we're not using the sent.id in the end, so I'm not trying to correct this
+        # ^^ I will correct this actually because I hate it all now
+        sent.text = re.sub(' +', ' ', sent.text)
         dep_children(sent)
         word_indexer(sent)
-        sent.text = re.sub(' +', ' ', sent.text)
 
         conjs = {}
         wrong_coords = []
@@ -282,7 +358,6 @@ def extract_coords(src, marker, conll_list, sentence_count):
             crd = [l]
             temp_coord = [] # this will be used if what the loop is looking at could be a nested coordination
             cc = None # the conjunction of a coordination
-            nested_coord = False
             conjs[l].sort()
             for conj in conjs[l]:
                 # an element of coordination is added either to the main coordination or to the temporary (possibly nested) one
@@ -301,14 +376,16 @@ def extract_coords(src, marker, conll_list, sentence_count):
                         # a nested coordination
                         crds.append(crd)
                         crd = [l] + temp_coord
-                        nested_coord = True
                         cc = sent.words[ch-1].text
                     elif cc and sent.words[ch-1].deprel == 'cc' and sent.words[ch-1].text == cc:
                         # if there was a conjunction found already and the new one is the same, we can clean
                         # the temp_coord list, because so far this seems to not be a nested coordination
                         crd += temp_coord
                         temp_coord = []
-            if not temp_coord:
+            # if not temp_coord:
+            #     crds.append(crd)
+            # this was here earlier and I feel like it shouldn't be, but now I'm not sure
+            if crd not in crds:
                 crds.append(crd)
 
         if crds:
@@ -344,7 +421,12 @@ def extract_coords(src, marker, conll_list, sentence_count):
 def extract_coords_from_conll(doc):
     coordinations = []
     for sent in tqdm(doc.sentences):
-        # updating sentence count so that it corresponds to the sentence ids in the source .tsv file
+        if args.t:
+            get_info_from_conll(sent)
+
+        sent.text = re.sub(' +', ' ', sent.text)
+        sent.text = clean(sent.text)
+        # those ^ two lines may destroy something so watch out
         dep_children(sent)
         word_indexer(sent)
 
@@ -382,7 +464,7 @@ def extract_coords_from_conll(doc):
             crd = [l]
             temp_coord = []  # this will be used if what the loop is looking at could be a nested coordination
             cc = None  # the conjunction of a coordination
-            nested_coord = False
+            conjs[l].sort()
             for conj in conjs[l]:
                 # an element of coordination is added either to the main coordination or a temporary (possibly nested) one
                 if cc:
@@ -400,14 +482,16 @@ def extract_coords_from_conll(doc):
                         # a nested coordination
                         crds.append(crd)
                         crd = [l] + temp_coord
-                        nested_coord = True
                         cc = sent.words[ch - 1].text
                     elif cc and sent.words[ch - 1].deprel == 'cc' and sent.words[ch - 1].text == cc:
                         # if there was a conjunction found already and the new one is the same, we can clean
                         # the temp_coord list, because so far this seems to not be a nested coordination
                         crd += temp_coord
                         temp_coord = []
-            if not temp_coord:
+            # if not temp_coord:
+            #     crds.append(crd)
+            # this was here earlier and I feel like it shouldn't be, but now I'm not sure
+            if crd not in crds:
                 crds.append(crd)
 
         # this loop writes down information about every coordination based on the list of elements of a coordination
@@ -469,7 +553,12 @@ def create_csv(crd_list, genre, year, source):
     :param source: name of the source file
     :return: nothing
     """
-    path = os.getcwd() + '/done-csv/stanza_coordinations_' + str(genre) + '_' + str(year) + '.csv'
+    if args.t:
+        parser = 'trankit'
+    else:
+        parser = 'stanza'
+
+    path = os.getcwd() + f'/done-csv/{parser}_coordinations_' + str(genre) + '_' + str(year) + '.csv'
     with open(path, mode='w', newline="", encoding='utf-8-sig') as outfile:
         writer = csv.writer(outfile)
         col_names = ['governor.position', 'governor.word', 'governor.tag', 'governor.pos', 'governor.ms',
@@ -556,32 +645,11 @@ def run_from_conll(file):
     print('done!\n' + 30*'--')
 
 
-# normalna wersja do terminala:
-
-# for file in args.f:
-#     print('processing ' + file)
-#     with torch.no_grad():
-#         run(os.getcwd() + '/split/' + file)
-
-# jakieś moje nienormalne wersje nwm:
-
-run_from_conll('acad_2048.conllu')
-
-# genre = args.f[0]
-# if args.f[1] == '7':
-#     files = [f'split_{genre}_{year}.tsv' for year in range(1991, 2007, 2)]
-#     files.remove(f'split_{genre}_2001.tsv')
-# elif args.f[1] == '6':
-#     files = [f'split_{genre}_{year}.tsv' for year in range(2007, 2021, 2)]
-#     files.remove(f'split_{genre}_2011.tsv')
-# for file in files:
-#     print('processing ' + file)
-#     with torch.no_grad():
-#         run(os.getcwd() + '/split/' + file)
-# PAMIĘTAJ ŻEBY WYPAKOWAĆ PLIKI ZANIM TO PUŚCISZ
-
-# files = [f'stanza_trees_acad_{year}.conllu' for year in range(2008, 2020, 2)]
-# print(files)
-# for file in files:
-#     print('processing ' + file)
-#     run_from_conll(file)
+if args.s or args.t:
+    for file in args.f:
+        print('processing ' + file)
+        run_from_conll(file)
+else:
+    for file in args.f:
+        print('processing ' + file)
+        run(os.getcwd() + '/' + file)
