@@ -4,7 +4,6 @@ import syll
 import csv
 import pandas as pd
 from tqdm import tqdm
-from datetime import datetime
 import torch
 import argparse
 import os
@@ -52,9 +51,10 @@ def chunker(src):
     genre = df.loc[1][2]
     try:
         year = str(int(df.loc[1][3]))
-    except ValueError: # może usuń to potem albo nie idk to jest przez to że w web22-34 źle był wpisany rok
-        year = src[-6:-4]
-    source = df.loc[1][4]
+    except ValueError:
+        # tsv files for web22-34 have something wrong in the year column, so if anything is wrong try to look for the
+        # year in the sourcefile name in the next column
+        year = str(int(re.search('\d+', df.loc[1][4]).group()))
     for x in tqdm(range(len(df))):
         if pd.isna(df.loc[x][5]) or not re.match('@@[0-9]+', str(df.loc[x][5])):
             # if there's missing information in the line, the text of the sentence is just appended
@@ -76,7 +76,7 @@ def chunker(src):
             txt += clean(str(df.loc[x][1])) + '\n\n'
     m = re.match('@@[0-9]+', str(marker))
     texts[m.group()] = txt
-    return texts, genre, year, source
+    return texts, genre, year
 
 
 def clean(txt):
@@ -94,7 +94,7 @@ def clean(txt):
                     (len(txt) > i+3 and txt[i+1:i+3] == '...' and txt[i-1] != '.') or \
                     (txt[i + 1] in [',', '.', '!', '?', ')', '}', ']', ':', ';'] and ((i + 2 < len(txt) and txt[i + 2] == ' ') or i + 2 == len(txt))) or \
                     (txt[i - 1] in ['(', '{', '['] and txt[i - 2] == ' ') or \
-                    (txt[i + 1:i + 4] == "n't"):
+                    (txt[i + 1:i + 4].casefold() == "n't".casefold()):
                 if txt[i+1] == '.' and txt[i-3:i-1] == '...':
                     continue # please may this work
                 to_remove.append(i)
@@ -123,29 +123,9 @@ def clean(txt):
     to_remove.reverse()
     # removes the spaces marked by indices in the list
     for i in to_remove:
-        txt = txt[:i] + txt[i+1:]
+        if txt[i] == ' ':
+            txt = txt[:i] + txt[i+1:]
     return txt
-
-
-def clean_sent_id(filename):
-    """
-    idr what this does or what i needed it for, but once i figure it out ill tell you
-    :param filename: name of some file to correct idk
-    :return:
-    """
-    with open(filename, mode='r', encoding='utf-8') as inp:
-        lines = inp.readlines()
-    with open(filename, mode='w', encoding='utf-8') as outp:
-        corrected = []
-        last_line = -1
-        for n, line in enumerate(lines):
-            if last_line == n:
-                continue
-            if re.match('# ID :', line):
-                line = line[:-1] + lines[n+1]
-                last_line = n+1
-            corrected.append(line)
-        outp.writelines(corrected)
 
 
 def get_info_from_conll(sentence):
@@ -202,18 +182,35 @@ def word_indexer(sentence):
     sent_text = sentence.text
     current_id = 0
     for word in sentence.words:
-        if re.search(re.escape(word.text), sent_text):
-            match = re.search(re.escape(word.text), sent_text)
-        elif "'" in word.text and re.search(word.text, sent_text):
-            # this should match "\'", which is not matched by re.escape()
-            match = re.search(word.text, sent_text)
-        else:
-            # maybe the clean version matches if the original does not!
+        word_area = sent_text[:len(word.text)*2]
+        # to not search the whole sentence, because if there are some inaccuracies with spaces in a token, it might match
+        # somthing further in the sentence
+
+        if re.search(re.escape(word.text), word_area):
+            match = re.search(re.escape(word.text), word_area)
+        elif "'" in word.text and '\\' in word.text and re.search(word.text, word_area):
+            # this should match a token "\'", which is not matched by re.escape()
+            match = re.search(word.text, word_area)
+        elif re.search(re.escape(re.sub(' +', ' ', word.text)), word_area):
+            # maybe 1st degree cleaning will help...
+            word.text = re.sub(' +', ' ', word.text)
+            match = re.search(re.escape(word.text), word_area)
+        elif re.search(re.escape(clean(re.sub(' +', ' ', word.text))), word_area):
+            # ... or the 2nd degree cleaning!
             word.text = re.sub(' +', ' ', word.text)
             word.text = clean(word.text)
-            match = re.search(re.escape(word.text), sent_text)
+            match = re.search(re.escape(word.text), word_area)
+        else:
+            # so there was this one case of a smiley face and the clean() function applied to the whole sentence
+            # changed it from : - ) to : -) and it could not match, so I decided to say it matches for any number of
+            # spaces anywhere in the expression
+            word_temp = word.text.replace(' ', '').replace('', '\\s*').replace(')', '\\)').replace('?', '\?').replace('.', '\.')
+            match = re.search(word_temp, word_area)
 
-        word.start = match.start() + current_id
+        try:
+            word.start = match.start() + current_id
+        except AttributeError:
+            print(sentence.sent_id)
         word.end = match.end() + current_id
         sent_text = sent_text[match.end():]
         current_id = match.end() + current_id
@@ -450,7 +447,7 @@ def create_conllu(sent_list, genre, year):
             conll_file.write('\n')
 
 
-def create_csv(crd_list, genre, year, source):
+def create_csv(crd_list, genre, year):
     """
     creates a .csv table where every row has information about one coordination
     :param crd_list: list of dictionaries, each dictionary represents a coordination
@@ -466,6 +463,7 @@ def create_csv(crd_list, genre, year, source):
 
     from_file = f'text_{genre}_{year}.txt'
     path = os.getcwd() + f'/outp/{parser}_coordinations_' + str(genre) + '_' + str(year) + '.csv'
+
     with open(path, mode='w', newline="", encoding='utf-8-sig') as outfile:
         writer = csv.writer(outfile)
         col_names = ['governor.position', 'governor.word', 'governor.tag', 'governor.pos', 'governor.ms',
@@ -521,7 +519,7 @@ def run(filename):
         genre = re.search('acad|news|fic|mag|blog|web|tvm', filename).group()
         year = re.search('[0-9]+', filename).group()
     else:
-        txts, genre, year, source = chunker(filename)
+        txts, genre, year = chunker(filename)
         crds_full_list = []
         conll_list = []
         sent_count = 0
@@ -541,7 +539,7 @@ def run(filename):
         print('done!')
 
     print('creating a csv...')
-    create_csv(crds_full_list, genre, year, filename)
+    create_csv(crds_full_list, genre, year)
     print('csv created!')
 
 
