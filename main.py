@@ -8,6 +8,7 @@ import torch
 import argparse
 import os
 from stanza.utils.conll import CoNLL
+from collections import deque
 
 
 arg_parser = argparse.ArgumentParser()
@@ -34,19 +35,23 @@ def chunker(src):
     puts the sentences from a given .tsv file into bigger chunks of text, every chunk is placed in a dictionary and is
     accessible with the @@ marker as key
     :param src: name of the source .tsv file
-    :return: dictionary with the text chunks, genre, year and source of the parsed texts given in the .tsv
+    :return: dict with the text chunks, dict with sent_ids, genre, year and source of the parsed texts given in the .tsv
     """
     path = os.getcwd() + '/inp/' + src
-    texts = {}
+    texts = {} # dictionary for texts to parse
+    sent_ids = {} # dictionary for ids of parsed sentences
     df = pd.read_csv(path, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
+
     # przerobione od Adama
     df.dropna()
     filtered1 = df[df["SENT"].str.contains("TOOLONG") == False]
     filtered2 = filtered1[filtered1["SENT"].str.match(r"^ *\d[\d ]*$") == False]
     filtered2.to_csv(path, sep="\t", quoting=csv.QUOTE_NONE, lineterminator="\n", index=None)
     # ------
+
     df = pd.read_csv(path, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
     txt = ''
+    id_list = []
     marker = ''
     genre = df.loc[1][2]
     try:
@@ -55,28 +60,34 @@ def chunker(src):
         # tsv files for web22-34 have something wrong in the year column, so if anything is wrong try to look for the
         # year in the sourcefile name in the next column
         year = str(int(re.search('\d+', df.loc[1][4]).group()))
-    for x in tqdm(range(len(df))):
-        if pd.isna(df.loc[x][5]) or not re.match('@@[0-9]+', str(df.loc[x][5])):
-            # if there's missing information in the line, the text of the sentence is just appended
-            txt += clean(str(df.loc[x][1])) + '\n\n'
 
-        elif marker != re.match('@@[0-9]+', str(df.loc[x][5])).group() and marker != '':
+    for x in tqdm(range(len(df))):
+        if marker != re.match('@@[0-9]+', str(df.loc[x][5])).group() and marker != '':
             # if there's a new @@ marker, a new entry in the dictionary is created
             m = re.match('@@[0-9]+', str(marker))
+
             texts[m.group()] = txt
             txt = clean(str(df.loc[x][1])) + '\n\n'
+
+            sent_ids[m.group()] = deque(reversed(id_list))
+            id_list = [int(df.loc[x][0])]
+
             marker = re.match('@@[0-9]+', str(df.loc[x][5])).group()
 
         elif marker != re.match('@@[0-9]+', str(df.loc[x][5])).group():
             # if this is the first marker in the file, it's just written down for later
             marker = re.match('@@[0-9]+', str(df.loc[x][5])).group()
             txt += clean(str(df.loc[x][1])) + '\n\n'
+            id_list.append(int(df.loc[x][0]))
 
         else:
             txt += clean(str(df.loc[x][1])) + '\n\n'
+            id_list.append(int(df.loc[x][0]))
+
     m = re.match('@@[0-9]+', str(marker))
     texts[m.group()] = txt
-    return texts, genre, year
+    sent_ids[m.group()] = deque(reversed(id_list))
+    return texts, sent_ids, genre, year
 
 
 def clean(txt):
@@ -302,7 +313,16 @@ def coord_info(crd, sent, conj, other_ids):
     return txt_ids
 
 
-def extract_coords(doc, marker, conll_list, sentence_count):
+def extract_coords(doc, marker, conll_list, sent_ids):
+    """
+    finds the coordinations in sentences in a given document
+    :param doc: Stanza object containing parsed sentences
+    :param marker: the @@ marker from COCA texts needed for sentence id
+    :param conll_list: list of sentences that have coordinations and that have to be included in the conllu file created
+    after parsing
+    :param sent_ids: dictionary that deques of sentence ids from the tsv file
+    :return: list of coordinations
+    """
     coordinations = []
     for sent in tqdm(doc.sentences, disable=parsing):
         # progress bar is disabled if the data has to be parsed first, because then there is a tqdm wrapper on the
@@ -313,9 +333,7 @@ def extract_coords(doc, marker, conll_list, sentence_count):
             get_info_from_conll(sent)
         sent.text = re.sub(' +', ' ', sent.text)
         if parsing:
-            index = sent.index + 1 + sentence_count
-            # updating sentence count so that it corresponds to the sentence ids in the source .tsv file
-            # ^ it didn't work, but we're not using the sent.id in the end, so I'm not trying to correct this
+            index = sent_ids[marker].pop()
         else:
             sent.text = clean(sent.text)
         dep_children(sent)
@@ -389,7 +407,7 @@ def extract_coords(doc, marker, conll_list, sentence_count):
                 # if there are any valid conj dependencies in a sentence, it will be included in the .conllu file
                 # a sentence id including the @@ marker from COCA source files is assigned and will be both in the .conllu
                 # and .csv file
-                sent.coca_sent_id = str(marker) + '-' + str(index)
+                sent.sent_id = str(marker) + '-' + str(index)
                 conll_list.append(sent)
 
         # this loop writes down information about every coordination based on the list of elements of a coordination
@@ -408,14 +426,10 @@ def extract_coords(doc, marker, conll_list, sentence_count):
                 r_ids = coord_info(coord, sent, 'R', [])
                 coord_info(coord, sent, 'L', r_ids)
                 coord['sentence'] = sent.text
-                if parsing:
-                    coord['sent_id'] = sent.coca_sent_id
-                else:
-                    coord['sent_id'] = sent.sent_id
+                coord['sent_id'] = sent.sent_id
                 coordinations.append(coord)
 
-        sentence_count += len(doc.sentences)
-    return coordinations, sentence_count
+    return coordinations
 
 
 # creating files -------------------------------------------------------------------------------------------------------
@@ -432,7 +446,7 @@ def create_conllu(sent_list, genre, year):
         sent_conll = []
         for com in sentence.comments:
             if re.match('# sent_id = ', com):
-                sent_conll.append('# sent_id = ' + sentence.coca_sent_id)
+                sent_conll.append('# sent_id = ' + sentence.sent_id)
             else:
                 sent_conll.append(com)
         for token in sentence.tokens:
@@ -519,7 +533,7 @@ def run(filename):
         genre = re.search('acad|news|fic|mag|blog|web|tvm', filename).group()
         year = re.search('[0-9]+', filename).group()
     else:
-        txts, genre, year = chunker(filename)
+        txts, sent_ids, genre, year = chunker(filename)
         crds_full_list = []
         conll_list = []
         sent_count = 0
@@ -531,7 +545,7 @@ def run(filename):
                 doc = nlp(txts[mrk])
             except RuntimeError:
                 doc = nlpcpu(txts[mrk])
-            coordinations, sent_count = extract_coords(doc, mrk, conll_list, sent_count)
+            coordinations = extract_coords(doc, mrk, conll_list, sent_ids)
             crds_full_list += coordinations
 
         print('processing conll...')
