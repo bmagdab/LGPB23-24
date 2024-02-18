@@ -7,12 +7,14 @@ from tqdm import tqdm
 import torch
 import argparse
 import os
+import gc
 from stanza.utils.conll import CoNLL
 from collections import deque
 
 
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('-f', nargs='+')
+arg_parser.add_argument('-d', action='store_true')
 arg_parser.add_argument('-s', action='store_true')
 arg_parser.add_argument('-t', action='store_true')
 args = arg_parser.parse_args()
@@ -528,15 +530,20 @@ def create_csv(crd_list, genre, year):
 # running --------------------------------------------------------------------------------------------------------------
 def run(filename):
     if args.s or args.t:
+        print('processing ' + filename)
         doc = CoNLL.conll2doc(os.getcwd() + '/inp/' + filename)
-        crds_full_list, sent_count = extract_coords(doc, '', [], 0)
+        print('extracting coords...')
+        crds_full_list = extract_coords(doc, '', [], [])
         genre = re.search('acad|news|fic|mag|blog|web|tvm', filename).group()
         year = re.search('[0-9]+', filename).group()
+        if len(year) == 1:
+            year = '0' + year
     else:
         txts, sent_ids, genre, year = chunker(filename)
+        if len(year) == 1:
+            year = '0' + year
         crds_full_list = []
         conll_list = []
-        sent_count = 0
 
         # extracts coordinations one chunk at a time
         for mrk in tqdm(txts.keys()):
@@ -548,7 +555,7 @@ def run(filename):
             coordinations = extract_coords(doc, mrk, conll_list, sent_ids)
             crds_full_list += coordinations
 
-        print('processing conll...')
+        print('processing conllu...')
         create_conllu(conll_list, genre, year)
         print('done!')
 
@@ -557,5 +564,22 @@ def run(filename):
     print('csv created!')
 
 
-for file in args.f:
-    run(file)
+if args.d:
+    for file in os.listdir(os.getcwd() + '/inp/'):
+        # first check if this file has already been processed
+        genre = re.search('acad|news|fic|mag|blog|web|tvm', file).group()
+        year = re.search('[0-9]+', file).group()
+        if len(year) == 1:
+            year = '0' + year
+
+        if args.s and f'stanza_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
+            continue
+        elif args.t and f'trankit_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
+            continue
+        else:
+            run(file)
+            gc.collect()
+else:
+    for file in args.f:
+        run(file)
+        gc.collect()
