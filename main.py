@@ -156,11 +156,20 @@ def get_info_from_conll(sentence):
         if '# ID : ' in comment:
             # sometimes in the ID field there's something like @@134545-987 which is fine, but then other times there's
             # @@134545TOOLONG blablah once upon-987 or @@134545-987.0 or even @@134545TOOLONG blablah once upon-987.0
-            textid = re.search('@@[0-9]{1,8}', comment).group()
-            if comment[-2:] == '.0':
-                sentid = re.search('-[0-9]+$', comment[:-2]).group()
+
+            # also there can be a NA in the ID field
+            if re.search('@@[0-9]{1,8}', comment):
+                textid = re.search('@@[0-9]{1,8}', comment).group()
             else:
+                partoftextid = re.search('[0-9]{1,8}$', sentence.text)
+                textid = '@@' + partoftextid.group()
+
+            if comment[-2:] == '.0' and re.search('-[0-9]+$', comment[:-2]):
+                sentid = re.search('-[0-9]+$', comment[:-2]).group()
+            elif re.search('-[0-9]+$', comment):
                 sentid = re.search('-[0-9]+$', comment).group()
+            else:
+                sentid = '-nan'
             sentence.sent_id = textid + sentid
             found += 1
             continue
