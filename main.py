@@ -147,6 +147,7 @@ def get_info_from_conll(sentence):
     :return:
     """
     found = 0 # I need both the sentence text and the right sentence id, this will keep track
+    take_previous_textid = False
     for comment in sentence.comments:
         if '# SENTENCE : ' in comment:
             sentence.text = comment[len('# SENTENCE : '):]
@@ -160,9 +161,11 @@ def get_info_from_conll(sentence):
             # also there can be a NA in the ID field
             if re.search('@@[0-9]{1,8}', comment):
                 textid = re.search('@@[0-9]{1,8}', comment).group()
-            else:
+            elif re.search('[0-9]{1,8}$', sentence.text):
                 partoftextid = re.search('[0-9]{1,8}$', sentence.text)
                 textid = '@@' + partoftextid.group()
+            else:
+                textid = None
 
             if comment[-2:] == '.0' and re.search('-[0-9]+$', comment[:-2]):
                 sentid = re.search('-[0-9]+$', comment[:-2]).group()
@@ -170,13 +173,18 @@ def get_info_from_conll(sentence):
                 sentid = re.search('-[0-9]+$', comment).group()
             else:
                 sentid = '-nan'
-            sentence.sent_id = textid + sentid
+
+            if not textid:
+                take_previous_textid = sentid
+            else:
+                sentence.sent_id = textid + sentid
             found += 1
             continue
 
     # a sent_id is given for every sentence, so it can be used to identify where an error occurred, but this is not the
     # id that I need for the csv table later
     assert found == 2, 'this conllu lacks information: ' + sentence.sent_id
+    return take_previous_textid
 
 
 # working with sentences -----------------------------------------------------------------------------------------------
@@ -205,7 +213,7 @@ def word_indexer(sentence):
     for word in sentence.words:
         word_area = sent_text[:len(word.text)*2]
         # to not search the whole sentence, because if there are some inaccuracies with spaces in a token, it might match
-        # somthing further in the sentence
+        # something further in the sentence
 
         if re.search(re.escape(word.text), word_area):
             match = re.search(re.escape(word.text), word_area)
@@ -225,7 +233,8 @@ def word_indexer(sentence):
             # so there was this one case of a smiley face and the clean() function applied to the whole sentence
             # changed it from : - ) to : -) and it could not match, so I decided to say it matches for any number of
             # spaces anywhere in the expression
-            word_temp = word.text.replace(' ', '').replace('', '\\s*').replace(')', '\\)').replace('?', '\?').replace('.', '\.')
+            word_temp = word.text.replace('*', '\*').replace(' ', '').replace('', '\\s*').replace('\\\\', '\\').replace('**', '*\*').replace(')', '\\)').replace('(', '\\(').replace('?', '\?').replace('.', '\.').replace('+', '\+').replace('$', '\$')
+            # above I have to add expressions to escape by hand, because I don't want it to escape the \\s*
             match = re.search(word_temp, word_area)
 
         try:
@@ -340,7 +349,11 @@ def extract_coords(doc, marker, conll_list, sent_ids):
 
         # preparing the sentence depending on its source:
         if args.t:
-            get_info_from_conll(sent)
+            textid_missing = get_info_from_conll(sent)
+            if textid_missing:
+                textid = re.match('@@[0-9]{1,8}', coordinations[-1]['sent_id']).group()
+                sent.sent_id = textid + textid_missing
+
         sent.text = re.sub(' +', ' ', sent.text)
         if parsing:
             index = sent_ids[marker].pop()
