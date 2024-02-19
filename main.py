@@ -7,7 +7,6 @@ from tqdm import tqdm
 import torch
 import argparse
 import os
-import gc
 from stanza.utils.conll import CoNLL
 from collections import deque
 
@@ -578,8 +577,6 @@ if args.d:
             continue
         else:
             run(file)
-            gc.collect()
 else:
     for file in args.f:
         run(file)
-        gc.collect()
