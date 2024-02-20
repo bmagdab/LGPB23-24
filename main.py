@@ -7,6 +7,7 @@ from tqdm import tqdm
 import torch
 import argparse
 import os
+from datetime import datetime
 from stanza.utils.conll import CoNLL
 from collections import deque
 
@@ -233,8 +234,9 @@ def word_indexer(sentence):
             # so there was this one case of a smiley face and the clean() function applied to the whole sentence
             # changed it from : - ) to : -) and it could not match, so I decided to say it matches for any number of
             # spaces anywhere in the expression
-            word_temp = word.text.replace('*', '\*').replace(' ', '').replace('', '\\s*').replace('\\\\', '\\').replace('**', '*\*').replace(')', '\\)').replace('(', '\\(').replace('?', '\?').replace('.', '\.').replace('+', '\+').replace('$', '\$')
+            word_temp = word.text.replace('*', '\*').replace(' ', '').replace('', '\\s*').replace('**', '*\*').replace(')', '\\)').replace('(', '\\(').replace('?', '\?').replace('.', '\.').replace('+', '\+').replace('$', '\$')
             # above I have to add expressions to escape by hand, because I don't want it to escape the \\s*
+            # I know this looks horrible, but I haven't come up with any other way to do it
             match = re.search(word_temp, word_area)
 
         try:
@@ -552,7 +554,10 @@ def create_csv(crd_list, genre, year):
 def run(filename):
     if args.s or args.t:
         print('processing ' + filename)
+        s = datetime.now()
         doc = CoNLL.conll2doc(os.getcwd() + '/inp/' + filename)
+        e = datetime.now()
+        print(f'reading conll took {str(e-s)}')
         print('extracting coords...')
         crds_full_list = extract_coords(doc, '', [], [])
         genre = re.search('acad|news|fic|mag|blog|web|tvm', filename).group()
