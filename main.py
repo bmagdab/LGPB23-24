@@ -225,24 +225,13 @@ def word_indexer(sentence):
             # maybe 1st degree cleaning will help...
             word.text = re.sub(' +', ' ', word.text)
             match = re.search(re.escape(word.text), word_area)
-        elif re.search(re.escape(clean(re.sub(' +', ' ', word.text))), word_area):
+        else:
             # ... or the 2nd degree cleaning!
             word.text = re.sub(' +', ' ', word.text)
             word.text = clean(word.text)
             match = re.search(re.escape(word.text), word_area)
-        else:
-            # so there was this one case of a smiley face and the clean() function applied to the whole sentence
-            # changed it from : - ) to : -) and it could not match, so I decided to say it matches for any number of
-            # spaces anywhere in the expression
-            word_temp = word.text.replace('*', '\*').replace(' ', '').replace('', '\\s*').replace('**', '*\*').replace(')', '\\)').replace('(', '\\(').replace('?', '\?').replace('.', '\.').replace('+', '\+').replace('$', '\$')
-            # above I have to add expressions to escape by hand, because I don't want it to escape the \\s*
-            # I know this looks horrible, but I haven't come up with any other way to do it
-            match = re.search(word_temp, word_area)
 
-        try:
-            word.start = match.start() + current_id
-        except AttributeError:
-            print(sentence.sent_id)
+        word.start = match.start() + current_id
         word.end = match.end() + current_id
         sent_text = sent_text[match.end():]
         current_id = match.end() + current_id
@@ -362,7 +351,11 @@ def extract_coords(doc, marker, conll_list, sent_ids):
         else:
             sent.text = clean(sent.text)
         dep_children(sent)
-        word_indexer(sent)
+        try:
+            word_indexer(sent)
+        except AttributeError:
+            sent.text = re.sub('# SENTENCE : |# text = ', '', sent.comments[0])
+            word_indexer(sent)
 
         conjs = {}
         wrong_coords = []
