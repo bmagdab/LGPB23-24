@@ -595,7 +595,7 @@ def run(filename):
 
 if args.d:
     for file in os.listdir(os.getcwd() + '/inp/'):
-        # first check if this file has already been processed
+        # check if this file has already been processed
         genre = re.search('acad|news|fic|mag|blog|web|tvm', file).group()
         year = re.search('[0-9]+', file).group()
         if len(year) == 1:
