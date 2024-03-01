@@ -17,17 +17,22 @@ arg_parser.add_argument('-f', nargs='+')
 arg_parser.add_argument('-d', action='store_true')
 arg_parser.add_argument('-s', action='store_true')
 arg_parser.add_argument('-t', action='store_true')
+arg_parser.add_argument('-c', action='store_true')
 args = arg_parser.parse_args()
 
-if args.s and args.t:
-    print('cant have em both!')
-elif not (args.s or args.t):
+if args.s*1 + args.t*1 + args.c*1 > 1:
+    # more than one input parser was chosen
+    print('choose one parser')
+    quit()
+elif args.s*1 + args.t*1 + args.c*1 == 0:
+    # no input parser was chosen, therefore parsing with stanza and then extracting coordinations
     parsing = True
     nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner',
                           download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
     nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner',
                              download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
 else:
+    # exactly one input parser was chosen, no parsing needed
     parsing = False
 
 
@@ -143,7 +148,7 @@ def clean(txt):
 
 def get_info_from_conll(sentence):
     """
-    gets the sentence text and sentence id for sentences in conllu files from trankit
+    gets the sentence text and sentence id for sentences in conllu files from trankit and combo
     :param sentence: sentence object from a stanza doc
     :return:
     """
@@ -228,8 +233,8 @@ def word_indexer(sentence):
         else:
             # ... or the 2nd degree cleaning!
             word.text = re.sub(' +', ' ', word.text)
-            word.text = clean(word.text)
-            match = re.search(re.escape(word.text), word_area)
+            word.clean_text = clean(word.text)
+            match = re.search(re.escape(word.clean_text), word_area)
 
         word.start = match.start() + current_id
         word.end = match.end() + current_id
@@ -339,7 +344,7 @@ def extract_coords(doc, marker, conll_list, sent_ids):
         # parsing loop
 
         # preparing the sentence depending on its source:
-        if args.t:
+        if args.t or args.c:
             textid_missing = get_info_from_conll(sent)
             if textid_missing:
                 textid = re.match('@@[0-9]{1,8}', coordinations[-1]['sent_id']).group()
@@ -356,6 +361,9 @@ def extract_coords(doc, marker, conll_list, sent_ids):
         except AttributeError:
             sent.text = re.sub('# SENTENCE : |# text = ', '', sent.comments[0])
             word_indexer(sent)
+        for word in sent.words:
+            if hasattr(word, 'clean_text'):
+                word.text = word.clean_text
 
         conjs = {}
         wrong_coords = []
@@ -490,6 +498,8 @@ def create_csv(crd_list, genre, year):
     """
     if args.t:
         parser = 'trankit'
+    elif args.c:
+        parser = 'combo'
     else:
         parser = 'stanza'
 
@@ -545,7 +555,7 @@ def create_csv(crd_list, genre, year):
 
 # running --------------------------------------------------------------------------------------------------------------
 def run(filename):
-    if args.s or args.t:
+    if args.s or args.t or args.c:
         print('processing ' + filename)
         s = datetime.now()
         doc = CoNLL.conll2doc(os.getcwd() + '/inp/' + filename)
@@ -594,6 +604,8 @@ if args.d:
         if args.s and f'stanza_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
             continue
         elif args.t and f'trankit_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
+            continue
+        elif args.c and f'combo_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
             continue
         else:
             run(file)
