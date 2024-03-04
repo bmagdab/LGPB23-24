@@ -1,0 +1,5 @@
+stanza
+pandas
+tqdm
+torch
+nltk

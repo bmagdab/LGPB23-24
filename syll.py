@@ -1,6 +1,5 @@
 # code from Michał Woźniak, email: m.wozniak60@student.uw.edu.pl, with a small adjustment from me in the count_word function
 
-import nltk
 from nltk.corpus import cmudict
 import re
 import inflect
