@@ -15,9 +15,10 @@ from collections import deque
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('-f', nargs='+')
 arg_parser.add_argument('-d', action='store_true')
-arg_parser.add_argument('-s', action='store_true')
-arg_parser.add_argument('-t', action='store_true')
-arg_parser.add_argument('-c', action='store_true')
+arg_parser.add_argument('-s', action='store_true') # input are conllu files of sentences parsed with stanza
+arg_parser.add_argument('-t', action='store_true') # input are conllu files of sentences parsed with trankit
+arg_parser.add_argument('-c', action='store_true') # input are conllu files of sentences parsed with combo
+arg_parser.add_argument('-m', action='store_true') # parse the sentences and use the saved models
 args = arg_parser.parse_args()
 
 if args.s*1 + args.t*1 + args.c*1 > 1:
@@ -27,9 +28,24 @@ if args.s*1 + args.t*1 + args.c*1 > 1:
 elif args.s*1 + args.t*1 + args.c*1 == 0:
     # no input parser was chosen, therefore parsing with stanza and then extracting coordinations
     parsing = True
-    nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner',
-                          download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
-    nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner',
+    if args.m:
+        config = {
+            'processors': 'tokenize,pos,lemma,depparse',
+            'lang': 'en',
+            'use_gpu': True,
+            'pos_model_path': './saved_models/en_compare-ud_charlm_tagger.pt',
+            'depparse_model_path': './saved_models/en_compare-ud_charlm_parser.pt',
+            'tokenize_pretokenized': False,
+            'tokenize_no_ssplit': True,
+            'download_method': stanza.DownloadMethod.REUSE_RESOURCES
+        }
+        nlp = stanza.Pipeline(**config)
+        config['use_gpu'] = False
+        nlpcpu = stanza.Pipeline(**config)
+    else:
+        nlp = stanza.Pipeline(lang='en', use_gpu=True, processors='tokenize, lemma, pos, depparse, ner',
+                              download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
+        nlpcpu = stanza.Pipeline(lang='en', use_gpu=False, processors='tokenize, lemma, pos, depparse, ner',
                              download_method=stanza.DownloadMethod.REUSE_RESOURCES, tokenize_no_ssplit=True)
 else:
     # exactly one input parser was chosen, no parsing needed
