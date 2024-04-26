@@ -51,6 +51,15 @@ else:
     # exactly one input parser was chosen, no parsing needed
     parsing = False
 
+if 'errors' not in os.listdir(os.getcwd()):
+    os.mkdir(os.path.join(os.getcwd(), 'errors'))
+
+if 'inp' not in os.listdir(os.getcwd()):
+    os.mkdir(os.path.join(os.getcwd(), 'inp'))
+
+if 'outp' not in os.listdir(os.getcwd()):
+    os.mkdir(os.path.join(os.getcwd(), 'outp'))
+
 
 # preprocessing --------------------------------------------------------------------------------------------------------
 def chunker(src):
@@ -85,7 +94,8 @@ def chunker(src):
         year = str(int(re.search('\d+', df.loc[1][4]).group()))
 
     for x in tqdm(range(len(df))):
-        if marker != re.match('@@[0-9]+', str(df.loc[x][5])).group() and marker != '':
+        read_marker = re.match('@@[0-9]+', str(df.loc[x][5]))
+        if read_marker and marker != read_marker.group() and marker != '':
             # if there's a new @@ marker, a new entry in the dictionary is created
             m = re.match('@@[0-9]+', str(marker))
 
@@ -97,7 +107,7 @@ def chunker(src):
 
             marker = re.match('@@[0-9]+', str(df.loc[x][5])).group()
 
-        elif marker != re.match('@@[0-9]+', str(df.loc[x][5])).group():
+        elif read_marker and marker != read_marker.group():
             # if this is the first marker in the file, it's just written down for later
             marker = re.match('@@[0-9]+', str(df.loc[x][5])).group()
             txt += clean(str(df.loc[x][1])) + '\n\n'
@@ -584,6 +594,7 @@ def run(filename):
         if len(year) == 1:
             year = '0' + year
     else:
+        print('processing ' + filename)
         txts, sent_ids, genre, year = chunker(filename)
         if len(year) == 1:
             year = '0' + year
@@ -600,7 +611,7 @@ def run(filename):
             coordinations = extract_coords(doc, mrk, conll_list, sent_ids)
             crds_full_list += coordinations
 
-        print('processing conllu...')
+        print('creating a conllu file...')
         create_conllu(conll_list, genre, year)
         print('done!')
 
@@ -624,7 +635,17 @@ if args.d:
         elif args.c and f'combo_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
             continue
         else:
-            run(file)
+            try:
+                run(file)
+            except Exception:
+                print(f'error on {file}')
+                os.rename(os.path.join(os.getcwd(), 'inp', file), os.path.join(os.getcwd(), 'errors', file))
+                continue
 else:
     for file in args.f:
-        run(file)
+        try:
+            run(file)
+        except Exception:
+            print(f'error on {file}')
+            os.rename(os.path.join(os.getcwd(), 'inp', file), os.path.join(os.getcwd(), 'errors', file))
+            continue
