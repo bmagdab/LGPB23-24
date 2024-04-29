@@ -628,7 +628,7 @@ if args.d:
         if len(year) == 1:
             year = '0' + year
 
-        if args.s and f'stanza_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
+        if (args.s or args.m) and f'stanza_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
             continue
         elif args.t and f'trankit_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
             continue
