@@ -35,6 +35,8 @@ elif args.s*1 + args.t*1 + args.c*1 == 0:
             'use_gpu': True,
             'pos_model_path': './saved_models/en_compare-ud_charlm_tagger.pt',
             'depparse_model_path': './saved_models/en_compare-ud_charlm_parser.pt',
+            # 'pos_model_path': './saved_models/en_comp-spok-ud_charlm_tagger.pt',
+            # 'depparse_model_path': './saved_models/en_comp-spok-ud_charlm_parser.pt',
             'tokenize_pretokenized': False,
             'tokenize_no_ssplit': True,
             'download_method': stanza.DownloadMethod.REUSE_RESOURCES
@@ -82,6 +84,9 @@ def chunker(src):
     # ------
 
     df = pd.read_csv(path, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
+    df = df[df['0'].notna()] # remove rows with empty indices
+    df.to_csv(path, sep="\t", quoting=csv.QUOTE_NONE, lineterminator="\n", index=None)
+    df = pd.read_csv(path, sep='\t', quoting=csv.QUOTE_NONE, lineterminator='\n', quotechar='"')
     txt = ''
     id_list = []
     marker = ''
@@ -103,7 +108,11 @@ def chunker(src):
             txt = clean(str(df.loc[x][1])) + '\n\n'
 
             sent_ids[m.group()] = deque(reversed(id_list))
-            id_list = [int(df.loc[x][0])]
+            try:
+                id_list = [int(df.loc[x][0])]
+            except ValueError:
+                print(str(df.loc[x][1]))
+                quit()
 
             marker = re.match('@@[0-9]+', str(df.loc[x][5])).group()
 
@@ -115,7 +124,11 @@ def chunker(src):
 
         else:
             txt += clean(str(df.loc[x][1])) + '\n\n'
-            id_list.append(int(df.loc[x][0]))
+            try:
+                id_list.append(int(df.loc[x][0]))
+            except ValueError:
+                print(str(df.loc[x]))
+                quit()
 
     m = re.match('@@[0-9]+', str(marker))
     texts[m.group()] = txt
@@ -589,7 +602,7 @@ def run(filename):
         print(f'reading conll took {str(e-s)}')
         print('extracting coords...')
         crds_full_list = extract_coords(doc, '', [], [])
-        genre = re.search('acad|news|fic|mag|blog|web|tvm', filename).group()
+        genre = re.search('acad|news|fic|mag|blog|web|tvm|spok', filename).group()
         year = re.search('[0-9]+', filename).group()
         if len(year) == 1:
             year = '0' + year
@@ -623,7 +636,7 @@ def run(filename):
 if args.d:
     for file in os.listdir(os.getcwd() + '/inp/'):
         # check if this file has already been processed
-        genre = re.search('acad|news|fic|mag|blog|web|tvm', file).group()
+        genre = re.search('acad|news|fic|mag|blog|web|tvm|spok', file).group()
         year = re.search('[0-9]+', file).group()
         if len(year) == 1:
             year = '0' + year
@@ -635,12 +648,13 @@ if args.d:
         elif args.c and f'combo_coordinations_{genre}_{year}.csv' in os.listdir(os.getcwd() + '/outp/'):
             continue
         else:
-            try:
-                run(file)
-            except Exception:
-                print(f'error on {file}')
-                os.rename(os.path.join(os.getcwd(), 'inp', file), os.path.join(os.getcwd(), 'errors', file))
-                continue
+            run(file)
+            # try:
+            #     run(file)
+            # except Exception:
+            #     print(f'error on {file}')
+            #     os.rename(os.path.join(os.getcwd(), 'inp', file), os.path.join(os.getcwd(), 'errors', file))
+            #     continue
 else:
     for file in args.f:
         try:
