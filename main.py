@@ -232,6 +232,18 @@ def get_info_from_conll(sentence):
     return take_previous_textid
 
 
+def shorten_conllu_file(filename):
+    """
+    make sure that sentences in the file are not repeated
+    """
+    with open(os.getcwd() + '/inp/' + filename, mode="r", encoding='utf-8') as file:
+        text = file.read()
+    all_sentences = text.split('\n\n')
+    less_sentences = list(dict.fromkeys(all_sentences))
+    new_text = '\n\n'.join(less_sentences)
+    with open(os.getcwd() + '/inp/' + filename, mode="w", encoding='utf-8') as file:
+        file.write(new_text)
+
 # working with sentences -----------------------------------------------------------------------------------------------
 def dep_children(sentence):
     """
@@ -595,6 +607,7 @@ def create_csv(crd_list, genre, year):
 # running --------------------------------------------------------------------------------------------------------------
 def run(filename):
     if args.s or args.t or args.c:
+        shorten_conllu_file(filename)
         print('processing ' + filename)
         s = datetime.now()
         doc = CoNLL.conll2doc(os.getcwd() + '/inp/' + filename)
